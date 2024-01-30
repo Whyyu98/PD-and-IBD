@@ -1,0 +1,51 @@
+install.packages("https://yanglab.westlake.edu.cn/software/gsmr/static/gsmr_1.1.1.tar.gz",repos=NULL,type="source")
+library("gsmr")
+library(data.table)
+data1<-fread("SC.txt")
+data2<-fread("ADHD.txt")
+data<- merge(data1,data2,by = 'SNP')
+data=na.omit(data)
+f <- data[, c("SNP", "A1.x", "A2.x", "freq.x", "b.x", "se.x", "p.x", "n.x","b.y","se.y","p.y","n.y")]
+colnames(f) <- c("SNP", "a1", "a2", "a1_freq", "bzx", "bzx_se", "bzx_pval", "bzx_n","bzy","bzy_se","bzy_pval","bzy_n")
+f <- subset(f, bzx_pval < 5e-8)
+write.table(f[,c(1,2)], "gsmr_NDD-PD.allele", col.names=F, row.names=F, quote=F)
+snp_coeff_id = scan("NDD-PD.xmat.gz", what="", nlines=1)
+snp_coeff = read.table("NDD-PD.xmat.gz", header=F, skip=2)
+snp_id = Reduce(intersect, list(f$SNP, snp_coeff_id))
+f = f[match(snp_id, f$SNP),]
+snp_order = match(snp_id, snp_coeff_id)
+snp_coeff_id = snp_coeff_id[snp_order]
+snp_coeff = snp_coeff[, snp_order]
+ldrho = cor(snp_coeff)
+colnames(ldrho) = rownames(ldrho) = snp_coeff_id
+dim(ldrho)
+
+snpfreq = f$a1_freq             # allele frequencies of the SNPs
+bzx = f$bzx     # effects of the instruments on risk factor
+bzx_se = f$bzx_se       # standard errors of bzx
+bzx_n = f$bzx_n          # GWAS sample size for the risk factor
+std_zx = std_effect(snpfreq, bzx, bzx_se, bzx_n)    # perform standardisation
+f$std_bzx = std_zx$b    # standardized bzx
+f$std_bzx_se = std_zx$se 
+
+
+bzx = f$std_bzx    # SNP effects on the risk factor
+bzx_se = f$std_bzx_se    # standard errors of bzx
+bzx_pval = f$bzx_pval   # p-values for bzx
+bzy = f$bzy    # SNP effects on the disease
+bzy_se = f$bzy_se    # standard errors of bzy
+bzy_pval = f$bzy_pval    # p-values for bzy
+n_ref = 1000    # Sample size of the reference sample
+gwas_thresh = 5e-8    # GWAS threshold to select SNPs as the instruments for the GSMR analysis
+single_snp_heidi_thresh = 0.01    # p-value threshold for single-SNP-based HEIDI-outlier analysis
+multi_snps_heidi_thresh = 0.01    # p-value threshold for multi-SNP-based HEIDI-outlier analysis
+nsnps_thresh = 1   # the minimum number of instruments required for the GSMR analysis
+heidi_outlier_flag = T    # flag for HEIDI-outlier analysis
+ld_r2_thresh = 0.05    # LD r2 threshold to remove SNPs in high LD
+ld_fdr_thresh = 0.05   # FDR threshold to remove the chance correlations between the SNP instruments
+gsmr2_beta = 0     # 0 - the original HEIDI-outlier method; 1 - the new HEIDI-outlier method that is currently under development 
+gsmr_results = gsmr(bzx, bzx_se, bzx_pval, bzy, bzy_se, bzy_pval, ldrho, snp_coeff_id, n_ref, heidi_outlier_flag, gwas_thresh, single_snp_heidi_thresh, multi_snps_heidi_thresh, nsnps_thresh, ld_r2_thresh, ld_fdr_thresh, gsmr2_beta)    # GSMR analysis 
+filtered_index=gsmr_results$used_index
+cat("The estimated effect of the exposure on outcome: ",gsmr_results$bxy)
+cat("Standard error of bxy: ",gsmr_results$bxy_se)
+cat("P-value for bxy: ", gsmr_results$bxy_pval)
