@@ -1,0 +1,147 @@
+library(TwoSampleMR) # version 0.5.6
+library(readxl) # version 1.4.1
+library(gridExtra) # version 2.3 
+library(forestplot) # version 3.1.1
+library(scales) # version 1.2.1
+library(tidyverse) # version 1.3.1
+# library(mr.raps) # version 0.2
+
+
+
+pqtl_csf <- read_excel("csf.xlsx")
+pqtl_plasma <- read_excel("plasma.xlsx")
+
+
+snp_MS <- read.table("SC.txt", header = TRUE, sep = "\t")
+
+snp_MS$outcome <- "SC"
+snp_MS$id.outcome <- "SC"
+
+harmonised_csf_MS <- harmonise_data(pqtl_csf, snp_MS)
+harmonised_plasma_MS <- harmonise_data(pqtl_plasma, snp_MS)
+
+# Main analysis ----------------------------------------------------------------
+
+mr_modified <- function(dat = harmonised_csf_MS, prop_var_explained = T)
+{
+  mr_res <- mr(dat)
+  
+  pve <- dat %>% 
+    dplyr::select(id.exposure, beta.exposure, se.exposure, samplesize.exposure) %>% 
+    dplyr::group_by(id.exposure) %>% 
+    dplyr::summarise(pve = sum((beta.exposure^2)/(beta.exposure^2 + samplesize.exposure*se.exposure^2)))
+  
+  if(prop_var_explained)
+  {
+    mr_res <- mr_res %>% 
+      dplyr::left_join(pve, by = "id.exposure")
+  }
+  
+  return(mr_res)
+}
+
+mr_csf_MS <- mr_modified(harmonised_csf_MS, prop_var_explained = T)
+mr_plasma_MS <- mr_modified(harmonised_plasma_MS, prop_var_explained = T)
+
+# Table S3: Heterogeneity test --------------------------------------------
+
+mr_heterogeneity(harmonised_csf_MS)
+mr_heterogeneity(harmonised_plasma_MS)
+
+mr_pleiotropy_test(harmonised_csf_MS)
+mr_pleiotropy_test(harmonised_plasma_MS)
+
+
+# Table 1 -----------------------------------------------------------------
+
+
+table1_csf <- mr_csf_MS %>% 
+  filter(pval < 0.05/4595,
+         method %in% c("Wald ratio","Inverse variance weighted")) %>% 
+  left_join(pqtl_csf, by = "exposure")
+
+
+table1_plasma <- mr_plasma_MS %>% 
+  filter(pval < 0.05/4595,
+         method %in% c("Wald ratio","Inverse variance weighted")) %>% 
+  left_join(pqtl_plasma, by = "exposure")
+
+
+table1 <- table1_plasma %>% 
+  
+  generate_odds_ratios()%>% 
+  mutate(`OR (95% CI)` = sprintf("%.2f (%.2f, %.2f)",or,or_lci95, or_uci95),
+         `P value` = scales::scientific(pval),
+         `PVE` = paste0(sprintf("%.2f",100*pve),"%"),
+         `F statistics` = sprintf("%.2f",F_statistics)) %>% 
+  dplyr::select(Tissue, Protein = exposure, `UniProt ID` = UniProt,
+                SNP, `Effect allele` = effect_allele.exposure, 
+                `OR (95% CI)`, `P value`, 
+                PVE, `F statistics`, Author)
+
+
+
+# Table 2: Summary of Sensitivity analysis --------------------------------
+
+# See tutorial on sensitivity analysis
+
+
+
+# Figure 1: Flowchart ----------------------------------------------------------
+
+# Made manually by PowerPoint
+
+
+# Figure 2: Main MR Findings ---------------------------------------------------
+
+
+volcano_plot <- function(.data, 
+                         number_comparasion = 1,
+                         title = "(A)",
+                         col_beta = "b",
+                         col_size = "pve",
+                         col_label = "exposure",
+                         legend.position = "none")
+{
+  p_thershold <- 0.05/number_comparasion
+  
+  p <- .data %>% 
+    rename(beta := !!col_beta,
+           size := !!col_size,
+           label := !!col_label) %>% 
+    mutate(x = beta,
+           y = -log10(pval),
+           label = ifelse(pval < p_thershold, label, NA)) %>% 
+    ggplot(aes(x = x, y = y)) +
+    geom_point(aes(size = size), alpha = 0.5, color = "#B80000") +
+    geom_vline(xintercept = 0, linetype = 2)+
+    geom_hline(yintercept = -log10(p_thershold), linetype = 2) +
+    theme_classic() +
+    theme(panel.grid = element_blank(),
+          legend.title = element_text(size = 6.5),
+          legend.text = element_text(size = 6.5),
+          legend.position = legend.position)+
+    labs(x = "ln(OR)", 
+         y = parse(text = "-log[10]*(italic(P)-value)"),
+         title = title) +
+    scale_size(name = "PVE",
+               breaks = c(0.2*1:3)) +
+    ggrepel::geom_label_repel(aes(label = label),size = 3)
+  plot(p)
+}
+
+
+gridExtra::grid.arrange(
+  mr_plasma_MS %>% 
+    filter(method %in% c("Wald ratio","Inverse variance weighted")) %>% 
+    volcano_plot(number_comparasion = 4595,
+                 title = "A  Plasma"),
+  
+  mr_csf_MS %>% 
+    filter(method %in% c("Wald ratio","Inverse variance weighted")) %>% 
+    volcano_plot(number_comparasion = 4595,
+                 legend.position = c(0.9,0.7),
+                 title = "B  CSF"),
+  ncol = 2,
+  nrow = 1)
+
