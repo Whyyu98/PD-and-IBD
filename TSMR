@@ -1,0 +1,99 @@
+library(plinkbinr)
+library(ieugwasr)
+library(data.table)
+library(TwoSampleMR)
+
+
+exposure_path <- "E:/Dsektop/GWAS/1/2"
+outcome_path <- "E:/Dsektop/GWAS/1"
+results_path <- "E:/Dsektop/TSMR" 
+
+
+exposure_storage_path <- paste0(getwd(), "/ExposureData")
+if (!dir.exists(exposure_storage_path)) {
+  dir.create(exposure_storage_path)
+}
+
+
+if (!dir.exists(results_path)) {
+  dir.create(results_path)
+}
+
+
+exposure_files <- list.files(exposure_path, pattern = "*.txt", full.names = TRUE)
+outcome_files <- list.files(outcome_path, pattern = "*.txt", full.names = TRUE)
+
+
+for (exp_file in exposure_files) {
+  
+  a <- fread(exp_file)
+  b <- subset(a, p < 5e-08)  # 相关性设置
+  
+ 
+  exp_file_name <- tools::file_path_sans_ext(basename(exp_file))
+  
+  
+  exposure_csv_file <- paste0(exposure_storage_path, "/exposure_", exp_file_name, ".csv")
+  write.csv(b, file = exposure_csv_file, row.names = FALSE)
+  
+  
+  exp_dat <- read_exposure_data(filename = exposure_csv_file, sep = ",", snp_col = "SNP", beta_col = "b", se_col = "se", effect_allele_col = "A1", other_allele_col = "A2", eaf_col = "freq", pval_col = "p")
+  exp_dat_clumped<- ld_clump(
+    clump_kb = 10000,
+    clump_r2 = 0.001,
+    clump_p = 0.99,
+    pop ="EUR",
+    dplyr::tibble(rsid=exp_dat$SNP, pval=exp_dat$pval.exposure, id=exp_dat$id.exposure),
+    plink_bin ="D:/RStudio/R-4.3.0/library/plinkbinr/bin/plink_Windows.exe",
+    bfile ="E:/Dsektop/ND-PD/MR/EUR/EUR"
+  )
+  
+  exp_dat_clumped<-subset(exp_dat,SNP %in% exp_dat_clumped$rsid)
+
+  
+  for (out_file in outcome_files) {
+    
+    c <- fread(out_file)
+    
+    
+    out_file_name <- tools::file_path_sans_ext(basename(out_file))
+    
+   
+    d <- merge(exp_dat_clumped, c, by.x = "SNP", by.y = "SNP")
+    
+    outcome_csv_file <- "outcome_data.csv"  # 您可以选择其他文件名和路径
+    write.csv(d, file = outcome_csv_file, row.names = FALSE)
+    
+    
+    outcome_dat <- read_outcome_data(
+      snps = exp_dat_clumped$SNP,
+      filename = outcome_csv_file,  # 使用导出的CSV文件路径
+      sep = ",", 
+      snp_col = "SNP", 
+      beta_col = "b", 
+      se_col = "se", 
+      effect_allele_col = "A1", 
+      other_allele_col = "A2", 
+      pval_col = "p", 
+      eaf_col = "freq"
+    )
+    
+    
+   
+    if (nrow(d) == 0) next
+    
+    
+    dat <- harmonise_data(exposure_dat = exp_dat_clumped, outcome_dat = outcome_dat)
+    
+   
+    mr_res <- mr(dat)
+    e <- generate_odds_ratios(mr_res = mr_res)
+    fdr <- p.adjust(e$pval, method = "BH")
+    e <- data.frame(e, FDR = fdr)
+    
+    
+    output_file <- paste0(results_path, "/", exp_file_name, "-", out_file_name, ".csv")
+    write.csv(e, file = output_file, row.names = FALSE)
+  }
+}
+
